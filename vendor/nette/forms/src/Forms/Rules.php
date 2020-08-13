@@ -295,7 +295,7 @@ class Rules implements \IteratorAggregate
 			2 => [], // other rules
 		];
 		foreach ($this->rules as $rule) {
-			$priorities[$rule->validator === Form::BLANK ? 0 : 2][] = $rule;
+			$priorities[$rule->validator === Form::BLANK && $rule->control === $this->control ? 0 : 2][] = $rule;
 		}
 		return new \ArrayIterator(array_merge(...$priorities));
 	}
