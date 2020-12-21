@@ -14,9 +14,9 @@ use Nette\Database\Conventions\StaticConventions;
 
 
 /**
- * Database context.
+ * Database explorer.
  */
-class Context
+class Explorer
 {
 	use Nette\SmartObject;
 
@@ -26,15 +26,19 @@ class Context
 	/** @var IStructure */
 	private $structure;
 
-	/** @var IConventions */
+	/** @var Conventions */
 	private $conventions;
 
 	/** @var Nette\Caching\IStorage */
 	private $cacheStorage;
 
 
-	public function __construct(Connection $connection, IStructure $structure, IConventions $conventions = null, Nette\Caching\IStorage $cacheStorage = null)
-	{
+	public function __construct(
+		Connection $connection,
+		Structure $structure,
+		Conventions $conventions = null,
+		Nette\Caching\IStorage $cacheStorage = null
+	) {
 		$this->connection = $connection;
 		$this->structure = $structure;
 		$this->conventions = $conventions ?: new StaticConventions;
@@ -57,6 +61,15 @@ class Context
 	public function rollBack(): void
 	{
 		$this->connection->rollBack();
+	}
+
+
+	/**
+	 * @return mixed
+	 */
+	public function transaction(callable $callback)
+	{
+		return $this->connection->transaction($callback);
 	}
 
 
@@ -99,7 +112,7 @@ class Context
 	}
 
 
-	public function getConventions(): IConventions
+	public function getConventions(): Conventions
 	{
 		return $this->conventions;
 	}
@@ -111,7 +124,7 @@ class Context
 	/**
 	 * Shortcut for query()->fetch()
 	 */
-	public function fetch(string $sql, ...$params): ?IRow
+	public function fetch(string $sql, ...$params): ?Row
 	{
 		return $this->connection->query($sql, ...$params)->fetch();
 	}
@@ -159,3 +172,6 @@ class Context
 		return new SqlLiteral($value, $params);
 	}
 }
+
+
+class_exists(Context::class);
