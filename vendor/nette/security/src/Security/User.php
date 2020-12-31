@@ -21,7 +21,7 @@ use Nette;
  * @property-read array $roles
  * @property-read int $logoutReason
  * @property   IAuthenticator $authenticator
- * @property   IAuthorizator $authorizator
+ * @property   Authorizator $authorizator
  */
 class User
 {
@@ -44,34 +44,44 @@ class User
 	/** @var callable[]  function (User $sender): void; Occurs when the user is logged out */
 	public $onLoggedOut;
 
-	/** @var IUserStorage Session storage for current user */
+	/** @var UserStorage|IUserStorage  Session storage for current user */
 	private $storage;
 
 	/** @var IAuthenticator|null */
 	private $authenticator;
 
-	/** @var IAuthorizator|null */
+	/** @var Authorizator|null */
 	private $authorizator;
 
-	/** @var IIdentity|false|null  false means undefined */
-	private $identity = false;
+	/** @var IIdentity|null */
+	private $identity;
 
 	/** @var bool|null */
 	private $authenticated;
 
+	/** @var int|null */
+	private $logoutReason;
+
 
 	public function __construct(
-		IUserStorage $storage,
+		IUserStorage $legacyStorage = null,
 		IAuthenticator $authenticator = null,
-		IAuthorizator $authorizator = null
+		Authorizator $authorizator = null,
+		UserStorage $storage = null
 	) {
-		$this->storage = $storage;
+		$this->storage = $storage ?? $legacyStorage; // back compatibility
+		if (!$this->storage) {
+			throw new Nette\InvalidStateException('UserStorage has not been set.');
+		}
 		$this->authenticator = $authenticator;
 		$this->authorizator = $authorizator;
 	}
 
 
-	final public function getStorage(): IUserStorage
+	/**
+	 * @return UserStorage|IUserStorage
+	 */
+	final public function getStorage()
 	{
 		return $this->storage;
 	}
@@ -88,13 +98,27 @@ class User
 	public function login($user, string $password = null): void
 	{
 		$this->logout(true);
-		if (!$user instanceof IIdentity) {
-			$user = $this->getAuthenticator()->authenticate(func_get_args());
+		if ($user instanceof IIdentity) {
+			$this->identity = $user;
+		} else {
+			$authenticator = $this->getAuthenticator();
+			$this->identity = $authenticator instanceof Authenticator
+				? $authenticator->authenticate($user, $password)
+				: $authenticator->authenticate(func_get_args());
 		}
-		$this->storage->setIdentity($user);
-		$this->storage->setAuthenticated(true);
-		$this->identity = $user;
+
+		$id = $this->authenticator instanceof IdentityHandler
+			? $this->authenticator->sleepIdentity($this->identity)
+			: $this->identity;
+		if ($this->storage instanceof UserStorage) {
+			$this->storage->saveAuthentication($id);
+		} else {
+			$this->storage->setIdentity($id);
+			$this->storage->setAuthenticated(true);
+		}
+
 		$this->authenticated = true;
+		$this->logoutReason = null;
 		$this->onLoggedIn($this);
 	}
 
@@ -106,12 +130,19 @@ class User
 	{
 		if ($this->isLoggedIn()) {
 			$this->onLoggedOut($this);
-			$this->storage->setAuthenticated(false);
-			$this->authenticated = false;
 		}
-		if ($clearIdentity) {
-			$this->storage->setIdentity(null);
-			$this->identity = null;
+
+		$this->authenticated = false;
+		$this->identity = $clearIdentity ? null : $this->identity;
+
+		if ($this->storage instanceof UserStorage) {
+			$this->storage->clearAuthentication($clearIdentity);
+		} else {
+			$this->storage->setAuthenticated(false);
+			if ($clearIdentity) {
+				$this->storage->setIdentity(null);
+			}
+			$this->logoutReason = self::MANUAL;
 		}
 	}
 
@@ -122,7 +153,7 @@ class User
 	final public function isLoggedIn(): bool
 	{
 		if ($this->authenticated === null) {
-			$this->authenticated = $this->storage->isAuthenticated();
+			$this->getStoredData();
 		}
 		return $this->authenticated;
 	}
@@ -133,10 +164,31 @@ class User
 	 */
 	final public function getIdentity(): ?IIdentity
 	{
-		if ($this->identity === false) {
-			$this->identity = $this->storage->getIdentity();
+		if ($this->authenticated === null) {
+			$this->getStoredData();
 		}
 		return $this->identity;
+	}
+
+
+	private function getStoredData(): void
+	{
+		if ($this->storage instanceof UserStorage) {
+			(function (bool $state, ?IIdentity $id, ?int $reason) use (&$identity) {
+				$identity = $id;
+				$this->authenticated = $state;
+				$this->logoutReason = $reason;
+			})(...$this->storage->getState());
+		} else {
+			$identity = $this->storage->getIdentity();
+			$this->authenticated = $this->storage->isAuthenticated();
+			$this->logoutReason = $this->storage->getLogoutReason();
+		}
+
+		$this->identity = $identity && $this->authenticator instanceof IdentityHandler
+			? $this->authenticator->wakeupIdentity($identity)
+			: $identity;
+		$this->authenticated = $this->authenticated && $this->identity;
 	}
 
 
@@ -148,6 +200,12 @@ class User
 	{
 		$identity = $this->getIdentity();
 		return $identity ? $identity->getId() : null;
+	}
+
+
+	final public function refreshStorage(): void
+	{
+		$this->identity = $this->authenticated = $this->logoutReason = null;
 	}
 
 
@@ -213,7 +271,11 @@ class User
 			$clearIdentity = $clearIdentity || func_get_arg(2);
 			trigger_error(__METHOD__ . '() third parameter is deprecated, use flag setExpiration($time, IUserStorage::CLEAR_IDENTITY)', E_USER_DEPRECATED);
 		}
-		$this->storage->setExpiration($expire, $clearIdentity ? IUserStorage::CLEAR_IDENTITY : 0);
+
+		$arg = $this->storage instanceof UserStorage
+			? $clearIdentity
+			: ($clearIdentity ? IUserStorage::CLEAR_IDENTITY : 0);
+		$this->storage->setExpiration($expire, $arg);
 		return $this;
 	}
 
@@ -223,7 +285,7 @@ class User
 	 */
 	final public function getLogoutReason(): ?int
 	{
-		return $this->storage->getLogoutReason();
+		return $this->logoutReason;
 	}
 
 
@@ -257,7 +319,7 @@ class User
 	 * Has a user effective access to the Resource?
 	 * If $resource is null, then the query applies to all resources.
 	 */
-	public function isAllowed($resource = IAuthorizator::ALL, $privilege = IAuthorizator::ALL): bool
+	public function isAllowed($resource = Authorizator::ALL, $privilege = Authorizator::ALL): bool
 	{
 		foreach ($this->getRoles() as $role) {
 			if ($this->getAuthorizator()->isAllowed($role, $resource, $privilege)) {
@@ -273,7 +335,7 @@ class User
 	 * Sets authorization handler.
 	 * @return static
 	 */
-	public function setAuthorizator(IAuthorizator $handler)
+	public function setAuthorizator(Authorizator $handler)
 	{
 		$this->authorizator = $handler;
 		return $this;
@@ -283,7 +345,7 @@ class User
 	/**
 	 * Returns current authorization handler.
 	 */
-	final public function getAuthorizator(): ?IAuthorizator
+	final public function getAuthorizator(): ?Authorizator
 	{
 		if (func_num_args()) {
 			trigger_error(__METHOD__ . '() parameter $throw is deprecated, use getAuthorizatorIfExists()', E_USER_DEPRECATED);
@@ -299,7 +361,7 @@ class User
 	/**
 	 * Returns current authorization handler.
 	 */
-	final public function getAuthorizatorIfExists(): ?IAuthorizator
+	final public function getAuthorizatorIfExists(): ?Authorizator
 	{
 		return $this->authorizator;
 	}

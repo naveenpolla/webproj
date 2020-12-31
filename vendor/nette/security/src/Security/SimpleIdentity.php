@@ -7,12 +7,12 @@
 
 declare(strict_types=1);
 
-namespace Nette\Bridges\ApplicationLatte;
-
-use Latte;
+namespace Nette\Security;
 
 
-interface ILatteFactory
+/**
+ * Default implementation of IIdentity.
+ */
+class SimpleIdentity extends Identity
 {
-	function create(): Latte\Engine;
 }

@@ -7,14 +7,15 @@
 
 declare(strict_types=1);
 
-namespace Nette\Application;
+namespace Nette\Bridges\ApplicationLatte;
 
-use Nette;
+use Latte;
 
 
-/**
- * @deprecated use Nette\Routing\Router
- */
-interface IRouter extends Nette\Routing\Router
+interface LatteFactory
 {
+	function create(): Latte\Engine;
 }
+
+
+interface_exists(ILatteFactory::class);
